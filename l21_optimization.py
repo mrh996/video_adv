@@ -8,7 +8,62 @@ import tensorflow as tf
 import scipy.misc
 from data import DataSet
 os.environ["TF_CPP_MIN_LOG_LEVEL"]='2'
-
+def construct_identity_param(batch_size,resolution_x=8,
+                 resolution_y=8, resolution_z=8):
+        identity_params = np.empty(
+            batch_size, resolution_x, resolution_y,
+            resolution_z, 3,
+            dtype=torch.float
+        )
+        for x in range(resolution_x):
+            for y in range(resolution_y):
+                for z in range(resolution_z):
+                    identity_params[:, x, y, z, 0] = \
+                        x / (resolution_x - 1)
+                    identity_params[:, x, y, z, 1] = \
+                        y / (resolution_y - 1)
+                    identity_params[:, x, y, z, 2] = \
+                        z / (resolution_z - 1)
+        return identity_params   
+def function(imgs,params_list,batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels,
+             resolution_x,resolution_y, resolution_z):
+        integer_part, float_part = tf.floor(imgs).long(), imgs % 1
+        
+                # do trilinear interpolation from the params grid
+        endpoint_values = []
+        for delta_x in [0, 1]:
+            corner_values = []
+            for delta_y in [0, 1]:
+                vertex_values = []
+                for delta_z in [0, 1]:
+                    params_index = np.zeros(
+                        (batch_size, seq_len, spec.crop_size, spec.crop_size))
+                    for color_index, resolution in [
+                        (integer_part[..., 0] + delta_x, resolution_x),
+                        (integer_part[..., 1] + delta_y, resolution_y),
+                        (integer_part[..., 2] + delta_z, resolution_z),
+                    ]:
+                        color_index = color_index.clip(
+                            0, resolution - 1)
+                        params_index = (params_index * resolution +
+                                        color_index)
+                    params_index = params_index.reshape(N, -1)
+                    vertex_values.append(
+                        params_list.gather(params_index,axis = 1).reshape(N, S,W, H, C)
+                    )
+                corner_values.append(
+                    vertex_values[0] * (1 - float_part[..., 2, None]) +
+                    vertex_values[1] * float_part[..., 2, None]
+                )
+            endpoint_values.append(
+                corner_values[0] * (1 - float_part[..., 1, None]) +
+                corner_values[1] * float_part[..., 1, None]
+            )
+        result = (
+            endpoint_values[0] * (1 - float_part[..., 0, None]) +
+            endpoint_values[1] * float_part[..., 0, None]
+        )
+        return result
 def calc_gradients(
         test_file,
         model_name,
@@ -19,15 +74,29 @@ def calc_gradients(
         weight_loss2=1,
         data_spec=None,
         batch_size=1,
-        seq_len=40):
+        seq_len=40,
+        resolution_x=8,
+        resolution_y=8, 
+        resolution_z=8):
 
     """Compute the gradients for the given network and images."""    
     spec = data_spec
-
+    color_param = tf.Variable(np.empty_like(construct_identity_param(batch_size,resolution_x,
+                 resolution_y, resolution_z)))
+        
     modifier = tf.Variable(0.01*np.ones((1, seq_len, spec.crop_size,spec.crop_size,spec.channels),dtype=np.float32))
+    
     input_image = tf.placeholder(tf.float32, (batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels))
     input_label = tf.placeholder(tf.int32, (batch_size))
-
+    image = input_imageimgs * tf.tensor(
+            [
+                self.resolution_x - 1,
+                self.resolution_y - 1,
+                self.resolution_z - 1,
+            ],
+            dtype=torch.float,
+            
+        )[None, None, None,None, :].expand(batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels)
     # temporal mask, 1 indicates the selected frame
     indicator = [0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0]   
 
