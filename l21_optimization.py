@@ -7,100 +7,88 @@ import numpy as np
 import tensorflow as tf
 import scipy.misc
 from data import DataSet
+import cv2
 os.environ["TF_CPP_MIN_LOG_LEVEL"]='2'
-def construct_identity_param(batch_size,resolution_x=8,
-                 resolution_y=8, resolution_z=8):
-        identity_params = np.empty(
-            batch_size, resolution_x, resolution_y,
-            resolution_z, 3,
-            dtype=torch.float
-        )
-        for x in range(resolution_x):
-            for y in range(resolution_y):
-                for z in range(resolution_z):
-                    identity_params[:, x, y, z, 0] = \
-                        x / (resolution_x - 1)
-                    identity_params[:, x, y, z, 1] = \
-                        y / (resolution_y - 1)
-                    identity_params[:, x, y, z, 2] = \
-                        z / (resolution_z - 1)
-        return identity_params   
-def function(imgs,params_list,batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels,
-             resolution_x,resolution_y, resolution_z):
-        integer_part, float_part = tf.floor(imgs).long(), imgs % 1
-        
-                # do trilinear interpolation from the params grid
-        endpoint_values = []
-        for delta_x in [0, 1]:
-            corner_values = []
-            for delta_y in [0, 1]:
-                vertex_values = []
-                for delta_z in [0, 1]:
-                    params_index = np.zeros(
-                        (batch_size, seq_len, spec.crop_size, spec.crop_size))
-                    for color_index, resolution in [
-                        (integer_part[..., 0] + delta_x, resolution_x),
-                        (integer_part[..., 1] + delta_y, resolution_y),
-                        (integer_part[..., 2] + delta_z, resolution_z),
-                    ]:
-                        color_index = color_index.clip(
-                            0, resolution - 1)
-                        params_index = (params_index * resolution +
-                                        color_index)
-                    params_index = params_index.reshape(N, -1)
-                    vertex_values.append(
-                        params_list.gather(params_index,axis = 1).reshape(N, S,W, H, C)
-                    )
-                corner_values.append(
-                    vertex_values[0] * (1 - float_part[..., 2, None]) +
-                    vertex_values[1] * float_part[..., 2, None]
-                )
-            endpoint_values.append(
-                corner_values[0] * (1 - float_part[..., 1, None]) +
-                corner_values[1] * float_part[..., 1, None]
-            )
-        result = (
-            endpoint_values[0] * (1 - float_part[..., 0, None]) +
-            endpoint_values[1] * float_part[..., 0, None]
-        )
-        return result
+
+def construct_identity_param(batch_size,resolution_x=8,resolution_y=8, resolution_z=8):
+    identity_params = np.empty((batch_size, resolution_x, resolution_y,resolution_z, 3),dtype=np.float)
+    for x in range(resolution_x):
+        for y in range(resolution_y):
+            for z in range(resolution_z):
+                identity_params[:, x, y, z, 0] = x / (resolution_x - 1)
+                identity_params[:, x, y, z, 1] = y / (resolution_y - 1)
+                identity_params[:, x, y, z, 2] = z / (resolution_z - 1)
+    return identity_params
+def function(imgs,params_list,N, S, W, H, C,resolution_x,resolution_y, resolution_z):
+    imgs = tf.reshape(imgs * tf.constant(
+    [
+        resolution_x - 1,
+        resolution_y - 1,
+        resolution_x - 1
+    ],dtype=tf.float32)[None, None, None, :],[N,S, W, H, C])
+    integer_part = tf.math.floor(imgs)
+    
+    float_part = tf.cast(imgs%1,tf.float64)
+    
+        # do trilinear interpolation from the params grid
+    endpoint_values = []
+    for delta_x in [0, 1]:
+        corner_values = []
+        for delta_y in [0, 1]:
+            vertex_values = []
+            for delta_z in [0, 1]:
+                params_index = np.zeros((N, S, W,H),dtype=np.int32)
+                for color_index, resolution in [
+                    (integer_part[..., 0] + delta_x, resolution_x),
+                    (integer_part[..., 1] + delta_y, resolution_y),
+                    (integer_part[..., 2] + delta_z, resolution_z)]:
+                    
+                        color_index = tf.clip_by_value(
+                            color_index, 0 , resolution - 1
+                        )
+                        params_index = (params_index * resolution + tf.dtypes.cast(color_index, tf.int32))
+                params_index = tf.reshape(params_index, [N,-1])
+                #new_para = tf.identity(params_list)
+                vertex_values.append(
+                    tf.reshape(tf.gather(params_list,params_index,axis = 1),[N, S,W, H, C]))
+            corner_values.append(vertex_values[0] * (1 - float_part[..., 2, None]) +vertex_values[1] * float_part[..., 2, None])
+        endpoint_values.append(corner_values[0] * (1 - float_part[..., 1, None]) +corner_values[1] * float_part[..., 1, None])
+    result = (endpoint_values[0] * (1 - float_part[..., 0, None]) +endpoint_values[1] * float_part[..., 0, None])
+    return tf.cast(result,tf.float32)
 def calc_gradients(
         test_file,
         model_name,
         output_file_dir,
         max_iter,
-        learning_rate=0.0001,
+        learning_rate=0.001,
         targets=None,
         weight_loss2=1,
         data_spec=None,
         batch_size=1,
         seq_len=40,
-        resolution_x=8,
-        resolution_y=8, 
-        resolution_z=8):
+        resolution_x=16,
+        resolution_y=32,
+        resolution_z=32,
+        c_space=cv2.COLOR_BGR2LUV):
 
     """Compute the gradients for the given network and images."""    
     spec = data_spec
-    color_param = tf.Variable(np.empty_like(construct_identity_param(batch_size,resolution_x,
-                 resolution_y, resolution_z)))
-        
+
     modifier = tf.Variable(0.01*np.ones((1, seq_len, spec.crop_size,spec.crop_size,spec.channels),dtype=np.float32))
     
     input_image = tf.placeholder(tf.float32, (batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels))
     input_label = tf.placeholder(tf.int32, (batch_size))
-    image = input_imageimgs * tf.tensor(
-            [
-                self.resolution_x - 1,
-                self.resolution_y - 1,
-                self.resolution_z - 1,
-            ],
-            dtype=torch.float,
-            
-        )[None, None, None,None, :].expand(batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels)
+    #input_image_cs = tf.placeholder(tf.float32, (batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels))
+    params_color = tf.Variable(np.empty_like(construct_identity_param(batch_size,resolution_x, resolution_y, resolution_z)).reshape(batch_size,-1,spec.channels))
+    
+    trans_color_img = function(input_image,params_color,batch_size, seq_len, spec.crop_size, spec.crop_size, spec.channels,resolution_x,resolution_y, resolution_z)
+    #print(tf.shape(trans_color_img))
+    #trans_input = np.array(trans_color_img,dtype=np.float32)
+    #trans_color_img = cv2.cvtColor( trans_input, cv2.COLOR_LUV2RGB)
     # temporal mask, 1 indicates the selected frame
-    indicator = [0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0]   
+    indicator = [0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0]
 
-    true_image = tf.minimum(tf.maximum(modifier[0,0,:,:,:]+input_image[0,0,:,:,:]*255.0, -spec.mean+spec.rescale[0]), -spec.mean+spec.rescale[1])/255.0
+    true_image = tf.minimum(tf.maximum(modifier[0,0,:,:,:]+trans_color_img [0,0,:,:,:]*255.0, -spec.mean+spec.rescale[0]), -spec.mean+spec.rescale[1])/255.0
     true_image = tf.expand_dims(true_image, 0)
     for ll in range(seq_len-1):
         if indicator[ll+1] == 1:
@@ -124,7 +112,8 @@ def calc_gradients(
         true_image_temp = tf.expand_dims(true_image_temp, 0)
 
         true_image = tf.concat([true_image, true_image_temp],0)
-    loss2 = ssim(true_image, input_image, data_range=1, size_average=True,  )
+    loss2 = tf.reduce_mean(1.0 - tf.image.ssim(true_image, input_image, max_val=255))
+   
     #loss2 = tf.reduce_sum(tf.sqrt(tf.reduce_mean(tf.square(true_image-input_image), axis=[0, 2, 3, 4])))
     norm_frame = tf.reduce_mean(tf.abs(modifier), axis=[2,3,4])
 
@@ -140,7 +129,7 @@ def calc_gradients(
 
     optimizer = tf.train.AdamOptimizer(learning_rate)
     print('optimizer.minimize....')
-    train = optimizer.minimize(loss, var_list=[modifier])
+    train = optimizer.minimize(loss, var_list=[modifier,params_color])
     # initiallize all uninitialized varibales
     init_varibale_list = set(tf.all_variables()) - variable_set
     sess.run(tf.initialize_variables(init_varibale_list))
@@ -163,7 +152,7 @@ def calc_gradients(
         all_names.append(frames)
     total = len(all_names)
     all_indices = range(total)
-    num_batch = total/batch_size
+    num_batch = int(total/batch_size)
     print('process data length:', num_batch)
 
     correct_ori = 0
@@ -192,7 +181,7 @@ def calc_gradients(
               correct_ori += 1
 
         tot_image += 1
-        print 'Start!'
+        print('Start!')
         min_loss = var_loss
         last_min = -1
         print('---frame-wise prediction---')
@@ -221,7 +210,7 @@ def calc_gradients(
 
             if cur_iter + 1 == max_iter or break_condition:
                 print('iter:', cur_iter, 'node_label:', var_node, 'label loss:', var_loss1, 'content loss:', var_loss2, 'prediction:', var_pre, 'probib:', true_prob)
-                var_diff, var_probs, noise_norm = sess.run((modifier, probs, norm_frame), feed_dict=feed_dict)
+                var_diff, var_color,var_probs, noise_norm = sess.run((modifier, params_color,probs, norm_frame), feed_dict=feed_dict)
                 for pp in range(seq_len):
                     # print the map value for each frame
                     print(noise_norm[0][pp])
@@ -275,9 +264,9 @@ def main():
                         help='Max number of images to be evaluated.')
     parser.add_argument('--file_list', type=str, default=None,
                         help='Evaluate a specific list of file in dataset.')
-    parser.add_argument('--num_iter', type=int, default=100,
+    parser.add_argument('--num_iter', type=int, default=10,
                         help='Number of iterations to generate attack.')
-    parser.add_argument('--save_freq', type=int, default=100,
+    parser.add_argument('--save_freq', type=int, default=5,
                         help='Save .npy file when each save_freq iterations.')
     parser.add_argument('--learning_rate', type=float, default=0.001 * 255,
                         help='Learning rate of each iteration.')
